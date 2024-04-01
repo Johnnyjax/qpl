@@ -12,6 +12,9 @@
 # 3. Add find_package(QPL CONFIG REQUIRED) at the beginning of this makefile
 
 file(GLOB cpp_files "*_example.cpp")
+# Add a static library for prle_generator
+add_library(prle_generator STATIC ${CMAKE_SOURCE_DIR}/tools/utils/generators/prle_generator.cpp)
+
 foreach(source_file ${cpp_files})
     # for each source file, remove path and extension, and prepend "ll_"
     get_filename_component(example_name ${source_file} NAME_WE)
@@ -20,11 +23,17 @@ foreach(source_file ${cpp_files})
     # create executable
     add_executable(${example_name} ${source_file})
     if (NOT ${source_file} MATCHES "with_data")
-        target_link_libraries(${example_name} PRIVATE qpl)
+        target_link_libraries(${example_name} PRIVATE qpl prle_generator)
     else()
-        target_link_libraries(${example_name} PRIVATE qpl $<$<C_COMPILER_ID:GNU,Clang>:stdc++fs>)
+        target_link_libraries(${example_name} PRIVATE qpl prle_generator $<$<C_COMPILER_ID:GNU,Clang>:stdc++fs>)
     endif()
     set_target_properties(${example_name} PROPERTIES CXX_STANDARD 17)
+        # Include the directories where prle_generator.hpp and util.hpp are located
+        target_include_directories(${example_name} PRIVATE 
+        ${CMAKE_SOURCE_DIR}/tools/utils/generators
+        ${CMAKE_SOURCE_DIR}/tools/utils/common
+        ${CMAKE_SOURCE_DIR}tools/utils/hw_dispatcher
+    )
 
     if(WIN32)
         target_compile_options(${example_name} PRIVATE "$<$<CONFIG:Release>:-O2>" /WX)

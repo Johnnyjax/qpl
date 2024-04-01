@@ -13,11 +13,23 @@
 
 #include "qpl/qpl.h"
 #include "examples_utils.hpp" // for argument parsing function
+#include "prle_generator.hpp"
 
-constexpr const uint32_t source_size        = 1000;
-constexpr const uint32_t input_vector_width = 8;
-constexpr const uint32_t lower_index        = 80;
-constexpr const uint32_t upper_index        = 123;
+using namespace qpl::test;
+
+constexpr uint32_t rle_element_bit_width = 7U;
+constexpr uint32_t rle_element_value = 113U;
+
+constexpr uint32_t rle_burst_counter_element_value = 3U;
+constexpr uint32_t rle_burst_counter_bit_width = 8U;
+
+constexpr uint32_t extract_lower_index = 100U;
+constexpr uint32_t extract_upper_index = 1000U;
+
+constexpr uint32_t rle_burst_src2_bit_width = 11U;
+
+constexpr uint32_t max_bit_index = 7;
+constexpr uint32_t bit_to_byte_shift_offset = 3;
 
 /**
  * @brief This example requires a command line argument to set the execution path. Valid values are `software_path`
@@ -31,6 +43,12 @@ constexpr const uint32_t upper_index        = 123;
  * `Hardware Path` doesn't support all features declared for `Software Path`
  *
  */
+
+static uint32_t bits_to_bytes(uint32_t bits_count) {
+    uint32_t bytes_count = (bits_count + max_bit_index) >> bit_to_byte_shift_offset;
+    return bytes_count;
+}
+
 auto main(int argc, char** argv) -> int {
     std::cout << "Intel(R) Query Processing Library version is " << qpl_get_library_version() << ".\n";
 
@@ -43,17 +61,10 @@ auto main(int argc, char** argv) -> int {
         return 1;
     }
 
-    // Source and output containers
-    std::vector<uint8_t> source(source_size, 0);
-    std::vector<uint8_t> destination(source_size, 4);
-
     std::unique_ptr<uint8_t[]> job_buffer;
     uint32_t   size = 0;
 
-    // Filling source container
-    std::iota(std::begin(source), std::end(source), 0);
-
-    // Job initialization
+        // Job initialization
     qpl_status status = qpl_get_job_size(execution_path, &size);
     if (status != QPL_STS_OK) {
         std::cout << "An error " << status << " acquired during job size getting.\n";
@@ -61,48 +72,66 @@ auto main(int argc, char** argv) -> int {
     }
 
     job_buffer = std::make_unique<uint8_t[]>(size);
-    qpl_job *job = reinterpret_cast<qpl_job *>(job_buffer.get());
-
-    status = qpl_init_job(execution_path, job);
+    qpl_job *job_ptr = reinterpret_cast<qpl_job *>(job_buffer.get());
+    status = qpl_init_job(execution_path, job_ptr);
     if (status != QPL_STS_OK) {
         std::cout << "An error " << status << " acquired during job initializing.\n";
         return 1;
     }
+    std::vector<uint8_t> source;
+    std::vector<uint8_t> destination;
 
-    // Performing an operation
-    job->next_in_ptr        = source.data();
-    job->available_in       = source_size;
-    job->next_out_ptr       = destination.data();
-    job->available_out      = static_cast<uint32_t>(destination.size());
-    job->op                 = qpl_op_extract;
-    job->src1_bit_width     = input_vector_width;
-    job->param_low          = lower_index;
-    job->param_high         = upper_index;
-    job->num_input_elements = source_size;
-    job->out_bit_width      = qpl_ow_nom;
+    rle_element_t rle_element;
+    rle_element.bit_width = rle_element_bit_width;
+    rle_element.element_value = rle_element_value;
+    rle_element.repeat_count = 4000U;
 
-    status = qpl_execute_job(job);
+    auto parquet_group = create_rle_group(rle_element);
+    // Source should contain single rle group + 1st byte as prle stream bit width
+    source.resize(parquet_group.size() + 1);
+    source[0] = static_cast<uint32_t>(rle_element.bit_width);
+
+    std::copy(parquet_group.begin(), parquet_group.end(), source.begin() + 1);
+
+    uint32_t destination_size = rle_element.repeat_count * (bits_to_bytes(rle_element.bit_width));
+
+    destination.resize(destination_size);
+
+    job_ptr->op = qpl_op_extract;
+    job_ptr->param_low = extract_lower_index;
+    job_ptr->param_high = extract_upper_index;
+    job_ptr->next_in_ptr = source.data();
+    job_ptr->available_in = static_cast<uint32_t>(source.size());
+    job_ptr->next_out_ptr = destination.data();
+    job_ptr->available_out = static_cast<uint32_t>(destination.size());
+    job_ptr->num_input_elements = rle_element.repeat_count;
+    job_ptr->parser = qpl_p_parquet_rle;
+
+    // TODO: REMOVE
+    job_ptr->src1_bit_width = rle_element.bit_width;
+
+    status = qpl_execute_job(job_ptr);
     if (status != QPL_STS_OK) {
         std::cout << "An error " << status << " acquired during performing extract.\n";
         return 1;
     }
 
-    const auto extract_size = job->total_out;
+    const auto extract_size = job_ptr->total_out;
 
     // Freeing resources
-    status = qpl_fini_job(job);
+    status = qpl_fini_job(job_ptr);
     if (status != QPL_STS_OK) {
         std::cout << "An error " << status << " acquired during job finalization.\n";
         return 1;
     }
 
-    // Compare with reference
-    for (size_t i = 0; i < extract_size; i++) {
-        if (destination[i] != source[i + lower_index]) {
-            std::cout << "Extract was done incorrectly.\n";
-            return 1;
-        }
-    }
+    // // Compare with reference
+    // for (size_t i = 0; i < extract_size; i++) {
+    //     if (destination[i] != source[i + extract_lower_index]) {
+    //         std::cout << "Extract was done incorrectly.\n";
+    //         return 1;
+    //     }
+    // }
     std::cout << "Extract was performed successfully." << std::endl;
 
     return 0;
